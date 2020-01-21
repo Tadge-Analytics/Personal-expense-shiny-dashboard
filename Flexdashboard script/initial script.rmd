@@ -1,0 +1,2317 @@
+---
+title: "Expense Analyser"
+output: 
+  flexdashboard::flex_dashboard:
+    navbar:
+      - { title: "About", href: "https://www.tadge-analytics.com.au", align: right }
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+
+library(tidyverse)
+library(plotly)
+library(lubridate)
+library(openxlsx)
+library(DT)
+library(flexdashboard)
+# library(rhandsontable)
+library(shinyWidgets)
+
+library(googlesheets4)
+sheets_auth(email = "tadge.analytics.test@gmail.com")
+
+# might need to update the widgets where possible
+# shinyWidgets::shinyWidgetsGallery()
+
+```
+
+
+
+
+Transactions {data-orientation=rows}
+===================================== 
+
+
+SideBar {.sidebar}
+---
+
+```{r}
+
+# change this to a slider
+
+fileInput("cba", 
+          "CBA",
+          multiple = FALSE,
+          accept = c("text/csv",
+                     "text/comma-separated-values, text/plain",
+                     ".csv"))
+
+fileInput("ing", 
+          "ING",
+          multiple = FALSE,
+          accept = c("text/csv",
+                     "text/comma-separated-values, text/plain",
+                     ".csv"))
+
+# fileInput("up_bank", 
+#           "UpBank",
+#           multiple = FALSE,
+#           accept = c("text/csv",
+#                      "text/comma-separated-values, text/plain",
+#                      ".csv"))
+
+fileInput("paypal",
+          "Paypal",
+          multiple = FALSE,
+          accept = c("text/csv",
+                     "text/comma-separated-values, text/plain",
+                     ".csv"))
+# 
+# 
+# fileInput("cash", 
+#           "Cash",
+#           multiple = FALSE,
+#           accept = c("text/csv",
+#                      "text/comma-separated-values, text/plain",
+#                      ".csv"))
+# 
+# 
+# fileInput("manual", 
+#           "Manual entry",
+#           multiple = FALSE,
+#           accept = c("text/csv",
+#                      "text/comma-separated-values, text/plain",
+#                      ".csv"))
+
+
+
+
+##############################################
+# use these below by default 
+
+fileInput("categorisation_file", 
+          "Retrieve from Excel",
+          multiple = FALSE,
+          accept = c(".xlsx"))
+
+
+downloadHandler(
+  filename = function() {
+    "Categorisations done.xlsx"
+  },
+  content = function(file) {
+    my_workbook <- createWorkbook()
+    
+    addWorksheet(
+      wb = my_workbook,
+      sheetName = "Categorisations"
+    )
+    
+    writeDataTable(
+      my_workbook,
+      sheet = "Categorisations",
+      new_and_already_done_row_items(),
+      tableStyle = "TableStyleMedium2", withFilter = T
+    )
+    
+    
+    setColWidths(my_workbook, "Categorisations", cols = c(1:7), widths = c(8,14,12,74,20,20,20))
+    
+    
+    addWorksheet(
+      wb = my_workbook,
+      sheetName = "Categories"
+    )
+    
+    
+    writeDataTable(
+      my_workbook,
+      sheet = "Categories",
+      keywords_newly_created(),
+      tableStyle = "TableStyleMedium2", withFilter = T
+    )
+    
+    setColWidths(my_workbook, "Categories", cols = c(1:4), widths = c(22))
+
+    
+    addWorksheet(
+      wb = my_workbook,
+      sheetName = "forecast rates"
+    )
+    
+    writeDataTable(
+      my_workbook,
+      sheet = "forecast rates",
+      rates_for_saving(),
+      tableStyle = "TableStyleMedium2", withFilter = T
+    )
+    
+        setColWidths(my_workbook, "forecast rates", cols = c(1:9), widths = c(22))
+
+    
+    
+    addWorksheet(
+      wb = my_workbook,
+      sheetName = "forecast values"
+    )
+    
+    writeDataTable(
+      my_workbook,
+      sheet = "forecast values",
+      forecast_table_for_saving() %>% 
+    mutate(Amount = round(Amount, 2)),
+      tableStyle = "TableStyleMedium2", withFilter = T
+    )
+    
+    setColWidths(my_workbook, "forecast values", cols = c(1:7), widths = c(15,15,30,20,12,30,30))
+
+    
+    
+    saveWorkbook(my_workbook, file)
+  })
+
+br()
+br()
+####################################
+
+
+# add a toggle
+materialSwitch("use_google_sheets", "Source from Googlesheets", status = "success")
+
+textInput("googlesheets_id_entry", 
+          "Googlesheets ID", 
+          value = "19t1yTFn3k7GL2FFPCSbW8Of98P4fItp9wDLUF9b6paM")
+
+
+actionButton("retrieve_from_google_sheets", "Retrieve (from GS)", icon = icon("download", "fa"))
+
+br()
+br()
+
+
+amount_col_name <- as.symbol("Amount (if different going forward)")
+reference_date_col_name <- as.symbol("A reference date -past or future")
+limit_prev_col_name <- as.symbol("Irregular schedule transaction limit for forecasting")
+
+
+blank_rates_table <- tibble(`Category Level1` = NA_character_, 
+                            `Category Level2` = NA_character_,
+                            `Category Level3` = NA_character_,
+                            `No plans for it to reoccur` = NA_integer_,
+                            !!limit_prev_col_name := NA_integer_, 
+                            `Shedule|Number` = NA_integer_, 
+                            `Shedule|Timeframe` = NA_character_, 
+                            !!amount_col_name := NA_integer_, 
+                            !!reference_date_col_name := NA_integer_)
+
+
+
+
+# upload button
+actionButton("upload_to_google_sheets", "Upload (to GS)", icon = icon("upload", "fa"))
+
+# upload back to google sheets
+observeEvent(
+  input$upload_to_google_sheets, {
+    req(new_and_already_done_row_items()) # take this object and upload it back to googlesheets
+    req(keywords_newly_created()) 
+    req(rates_for_saving()) 
+    req(forecast_table_for_saving()) 
+    
+    
+    
+    
+    
+        
+    if (nrow(new_and_already_done_row_items()) == 0) {
+      
+      googlesheets4::write_sheet( 
+            tibble(
+  data_source = NA_character_,        
+  Date = NA_character_,               
+  Amount = NA_character_,              
+  Description = NA_character_,         
+  Keyword = NA_character_,
+  `Suggested Category` = NA_character_,
+  `Category Level1` = NA_character_) %>%
+  mutate(Date = as.Date(Date),
+         Amount = as.numeric(Amount)), 
+        ss = input$googlesheets_id_entry, sheet = "Categorisations") 
+      
+    } else {
+      
+      googlesheets4::write_sheet( new_and_already_done_row_items(), ss = input$googlesheets_id_entry, sheet = "Categorisations") 
+      
+    }
+    
+    
+  
+    
+    
+    if (nrow(keywords_newly_created()) == 0) {
+      
+      googlesheets4::write_sheet( 
+        tibble(type = NA_character_,
+               Keyword = NA_character_, 
+               `Category Level1` = NA_character_, 
+               warning = NA_character_), 
+        ss = input$googlesheets_id_entry, sheet = "Categories") 
+      
+    } else {
+      
+      googlesheets4::write_sheet( keywords_newly_created(), ss = input$googlesheets_id_entry, sheet = "Categories") 
+      
+    }
+    
+    
+    
+    
+    if (nrow(rates_for_saving()) == 0) {
+      
+      googlesheets4::write_sheet( 
+        blank_rates_table, 
+        ss = input$googlesheets_id_entry, sheet = "forecast rates")
+      
+    } else {
+      
+      googlesheets4::write_sheet( rates_for_saving(), ss = input$googlesheets_id_entry, sheet = "forecast rates")
+      
+    }
+    
+    
+    
+    
+    if (nrow(forecast_table_for_saving()) == 0) {
+      
+      
+      googlesheets4::write_sheet(tibble(
+        data_source = NA_character_,        
+        Date = NA_character_,               
+        Amount = NA_character_,              
+        Description = NA_character_,         
+        Keyword = NA_character_,
+        `Suggested Category` = NA_character_,
+        `Category Level1` = NA_character_,
+        `Category Level2` = NA_character_,
+        `Category Level3` = NA_character_),
+        ss = input$googlesheets_id_entry, sheet = "forecast values") } else {
+          
+      googlesheets4::write_sheet( forecast_table_for_saving(), ss = input$googlesheets_id_entry, sheet = "forecast values")
+      
+    }
+    
+
+  })
+
+
+
+
+# switch for only Cats done table
+# to make upload / download faster
+
+# googlesheets4::write_sheet(new_and_already_done_row_items(), ss = input$googlesheets_id_entry, sheet = "Categorisations")
+
+# observeEvent(
+#   input$upload_to_google_sheets, {
+#     req(new_and_already_done_row_items())
+#     googlesheets4::write_sheet(new_and_already_done_row_items(), ss = input$googlesheets_id_entry, sheet = "Categorisations")
+#   })
+
+
+```
+
+
+
+
+```{r}
+
+
+blank_table <- tibble(Date = NA_character_,
+                      Amount = NA_character_,
+                      Description  = NA_character_,
+                      data_source = NA_character_) %>% 
+  mutate(Date = as.Date(Date),
+         Amount = as.numeric(Amount)) %>% 
+  slice(0)
+
+
+
+# cba
+
+cba <- reactive(if (is.null(input$cba)){
+  
+  blank_table
+  
+} else {
+  
+  read_csv(input$cba$datapath, col_names = F) %>% 
+    rename(Date = 1, Amount = 2, Description = 3, Balance = 4) %>%
+    mutate(data_source = "cba",
+           Date = dmy(Date)) %>%
+    select(-Balance)
+})
+
+
+
+
+
+# ing
+
+ing <- reactive(if (is.null(input$ing)){
+  
+  blank_table
+  
+} else {
+  
+  read_csv(input$ing$datapath) %>% 
+    mutate(Credit = as.numeric(Credit), 
+           Debit = as.numeric(Debit),
+           Amount = coalesce(Credit, Debit),
+           data_source = "ing", 
+           Date = dmy(Date)) %>%
+    select(-Credit, -Debit, -Balance)
+})
+
+
+
+
+# paypal
+
+paypal <- reactive(if (is.null(input$paypal)){
+  
+  blank_table
+  
+} else {
+  
+  paypal_import <- read_csv(input$paypal$datapath) %>% 
+    mutate(data_source = "paypal",
+           Date = dmy(Date)) %>% 
+    rename(Description = Name) %>% 
+    select(-Balance, -`Time zone`, -`Receipt ID`) 
+  
+  # work out international payments aud amounts
+  aud_amounts <- paypal_import %>% 
+    filter(Currency != "AUD" | Type == "General Currency Conversion") %>% 
+    filter(is.na(Description)) %>% 
+    filter(Currency == "AUD") %>%  # these are the AUD values for above
+    select(Date, Time, Currency, Amount)
+  
+  # work out international payments desciprtions
+  descriptions_with_aud_amounts <- paypal_import %>% 
+    filter(Currency != "AUD" | Type == "General Currency Conversion") %>% 
+    filter(!is.na(Description)) %>%  
+    select(-Amount, -Currency) %>% 
+    left_join(aud_amounts, by = c("Date", "Time")) %>% 
+    distinct(Date, Time, .keep_all = T)
+  
+  # combine non-international with internationals
+  paypal_import %>% 
+    filter(!(Currency != "AUD" | Type == "General Currency Conversion")) %>% 
+    filter(Type != "Transfer to PayPal account") %>% 
+    filter(Description != "PayPal") %>% 
+    bind_rows(descriptions_with_aud_amounts) %>% 
+    mutate(Description = paste0(Description, " (", Type, ")")) %>% 
+    select(-Time, -Currency, -Type, -Status)  
+  
+})
+
+
+
+
+# up_bank
+# 
+# up_bank <- reactive(if (is.null(input$up_bank)){
+#   
+#   blank_table
+#   
+# } else {
+#   
+#   read_csv(input$up_bank$datapath) %>% 
+#     transmute(Date = as.Date(Time),
+#               Description = paste0(Payee, "|", `Transaction Type`),
+#               Amount = `Total (AUD)`,
+#               data_source = "upbank")
+#   
+# })
+
+
+
+
+# cash
+# 
+# cash <- reactive(if (is.null(input$cash)){
+#   
+#   blank_table
+#   
+# } else {
+#   
+#   read_csv(input$cba$datapath) %>% 
+#     mutate(Date = dmy(Date),
+#            data_source = "cash")
+#   
+# })
+
+
+# manual entry
+# 
+# manual <- reactive(if (is.null(input$manual)){
+#   
+#   blank_table
+#   
+# } else {
+#   
+#   read_csv(input$manual$datapath) %>% 
+#     mutate(Date = dmy(Date),
+#            data_source = "manual")
+# })
+
+
+
+
+
+
+# combine all transaction sources
+
+combined_import1 <- reactive(bind_rows(cba(), 
+                                       ing(), 
+                                       paypal(),
+                                       # cash(),
+                                       # up_bank()
+))
+
+
+# create seperate rows for cashouts that happened with purchases
+
+purchase_cash_outs <- reactive(combined_import1() %>% 
+                                 filter(str_detect(Description, "Cash Out")) %>% 
+                                 {if (nrow(.) == 0) {.} else {
+                                   mutate(., row_id = row_number()) %>% 
+                                     uncount(2) %>% 
+                                     group_by(row_id) %>% 
+                                     mutate(cash_out_or_purchase = c("cash_out", "purchase")) %>% 
+                                     ungroup() %>%
+                                     separate(Description, "\\$", into = c("cash_out_amount", "second"), remove = F, extra = "merge") %>% 
+                                     separate(second, "\\.", into = c("cash_out_amount", "second"), extra = "merge") %>% 
+                                     mutate(cash_out_amount = if_else(is.na(cash_out_amount), Amount, -as.numeric(cash_out_amount)),
+                                            purchase_amount = Amount - cash_out_amount,
+                                            Amount = if_else(cash_out_or_purchase == "cash_out", cash_out_amount, purchase_amount),
+                                            Description = paste0("(", cash_out_or_purchase, ") ", Description)) %>% 
+                                     select(Date, Description, Amount, data_source) %>% 
+                                     filter(Amount != 0)
+                                 }})
+
+
+combined_import <- reactive(bind_rows(combined_import1() %>% filter(!str_detect(Description, "Cash Out")),
+                                      purchase_cash_outs()))
+
+
+
+
+
+
+
+
+
+
+
+
+
+blank_categorisations_done <- tibble(
+  data_source = NA_character_,        
+  Date = NA_character_,               
+  Amount = NA_character_,              
+  Description = NA_character_,         
+  Keyword = NA_character_,
+  `Suggested Category` = NA_character_,
+  `Category Level1` = NA_character_) %>%
+  mutate(Date = as.Date(Date),
+         Amount = as.numeric(Amount)) %>% 
+  slice(0)
+
+
+
+# retrieval of the googlesheets data
+google_sheet_cats_done_data <- eventReactive(c(input$retrieve_from_google_sheets,
+                                               input$retrieve_from_google_sheets_2), { 
+                                                 
+                                                 if (input$retrieve_from_google_sheets == 0) {NULL} else {
+                                                   
+                                                   read_sheet(ss = input$googlesheets_id_entry, sheet = "Categorisations", col_types = "c") %>% 
+                                                     mutate(Date = as.Date(Date),
+                                                            Amount = as.numeric(Amount),
+                                                            `Suggested Category` = as.character(`Suggested Category`),
+                                                            `Category Level1` = as.character(`Category Level1`),
+                                                            `Category Level1` = if_else(`Category Level1` == "1", `Suggested Category`, `Category Level1`),
+                                                            Keyword = trimws(toupper(Keyword)),
+                                                            `Category Level1` = trimws(toupper(`Category Level1`)))}}) 
+
+
+# make this run only when there are values for input$categorisation_file
+
+excel_cats_done_data <- reactive(
+  
+  if (is.null(input$categorisation_file)) {NULL} else {
+    
+    readxl::read_excel(input$categorisation_file$datapath, sheet = "Categorisations", col_types = "text") %>%
+      mutate(Date = as.Date(as.numeric(Date), origin = "1899-12-30"),
+             Amount = as.numeric(Amount),
+             `Category Level1` = if_else(`Category Level1` == "1", `Suggested Category`, `Category Level1`),
+             Keyword = trimws(toupper(Keyword)),
+             `Category Level1` = trimws(toupper(`Category Level1`)))
+  })
+
+
+
+
+# logic for assigning object(s)
+
+categorisations_done_upload <- reactive(
+  if (is.null(input$categorisation_file) & input$retrieve_from_google_sheets == 0) {
+    blank_categorisations_done} else { 
+      if (!is.null(input$categorisation_file) & !input$use_google_sheets) {
+        excel_cats_done_data()
+      } else  { 
+        google_sheet_cats_done_data()
+      }})
+
+
+
+
+blank_categories_data <- tibble(
+  Keyword = NA_character_,
+  `Category Level1` = NA_character_) %>% 
+  slice(0)
+
+
+excel_categories_data <- reactive(
+  if (is.null(input$categorisation_file)) {NULL} else {
+    readxl::read_excel(input$categorisation_file$datapath, sheet = "Categories", col_types = "text") %>% 
+      filter(!is.na(Keyword)) %>% 
+      select(-type) %>% 
+      mutate(Keyword = trimws(toupper(Keyword)),
+             `Category Level1` = trimws(toupper(`Category Level1`)))
+  })
+
+
+googlesheets_categories_data <- eventReactive(c(input$retrieve_from_google_sheets,
+                                                input$retrieve_from_google_sheets_2), { 
+                                                  
+                                                  if (input$retrieve_from_google_sheets == 0) {NULL} else {
+                                                    
+                                                    read_sheet(ss = input$googlesheets_id_entry, sheet = "Categories", col_types = "c") %>% 
+                                                      filter(!is.na(Keyword)) %>% 
+                                                      select(-type) %>% 
+                                                      mutate(Keyword = trimws(toupper(Keyword)),
+                                                             `Category Level1` = trimws(toupper(`Category Level1`)))}})
+
+
+categories_upload <- reactive(
+  if (is.null(input$categorisation_file) & input$retrieve_from_google_sheets == 0) {
+    blank_categories_data} else { 
+      if (!is.null(input$categorisation_file) & !input$use_google_sheets) {
+        excel_categories_data()
+      } else  { 
+        googlesheets_categories_data()
+      }})
+
+
+
+
+excel_rates_table <- reactive(
+  if (is.null(input$categorisation_file)) {NULL} else {
+    
+    readxl::read_excel(input$categorisation_file$datapath, sheet = "forecast rates", col_types = "text") %>% 
+      mutate(`Category Level1` = trimws(toupper(`Category Level1`)), 
+             `Category Level2` = trimws(toupper(`Category Level2`)),
+             `Category Level3` = trimws(toupper(`Category Level3`)))})
+
+
+
+
+googlesheets_rates_table <- eventReactive(c(input$retrieve_from_google_sheets,
+                                            input$retrieve_from_google_sheets_2), { 
+                                              
+                                              if (input$retrieve_from_google_sheets == 0) {NULL} else {
+                                                
+                                                read_sheet(ss = input$googlesheets_id_entry, sheet = "forecast rates", col_types = "c") %>% 
+                                                  mutate(`Category Level1` = trimws(toupper(`Category Level1`)), 
+                                                         `Category Level2` = trimws(toupper(`Category Level2`)),
+                                                         `Category Level3` = trimws(toupper(`Category Level3`)))}})
+
+
+rates_import <- reactive(
+  if (is.null(input$categorisation_file) & input$retrieve_from_google_sheets == 0) {
+    blank_rates_table} else { 
+      if (!is.null(input$categorisation_file) & !input$use_google_sheets) {
+        excel_rates_table()
+      } else  { 
+        googlesheets_rates_table()
+      }})
+
+
+
+
+
+
+# process uploaded files
+
+combine_transactions_with_historical <- function(combined_import,
+                                                 categorisations_done_upload,
+                                                 categories_upload) {
+  
+  
+  # preparing the update of the keywords + categories table (second sheet)
+  
+  # still present in cats done
+  existing_keywords <- categories_upload %>%
+    distinct(Keyword) %>% 
+    semi_join(categorisations_done_upload,  by = "Keyword") %>%
+    mutate(type = "existing keyword")
+  
+  # No longer present in cats done sheet?
+  historical_keywords <- categories_upload %>%
+    distinct(Keyword) %>% 
+    anti_join(categorisations_done_upload, by = "Keyword") %>%
+    mutate(type = "historical keyword")
+  
+  # new (only in cats done records) 
+  new_keywords <- categorisations_done_upload %>%
+    distinct(Keyword) %>%
+    filter(!is.na(Keyword)) %>%
+    anti_join(categories_upload, by = "Keyword") %>%
+    mutate(type = "new keyword")
+  
+  
+  initial_all_keywords <- bind_rows(existing_keywords, 
+                                    historical_keywords, 
+                                    new_keywords) %>% 
+    arrange(Keyword)
+  
+  
+  
+  initial_previous_keywords <- initial_all_keywords %>% 
+    distinct(Keyword) %>%
+    group_by(Keyword) %>% 
+    {if (nrow(.) == 0) mutate(., test = NA) else crossing(., test = .$Keyword)} %>%
+    {if (nrow(.) == 1) mutate(., contained = NA) else 
+      filter(., Keyword != test) %>% 
+        mutate(contained = str_detect(test, fixed(Keyword)))} %>%
+    mutate(seconded = if_else(
+      any(contained) | 
+        str_length(Keyword) < 4, 
+      1, 
+      0)) %>%
+    select(-test, -contained) %>%
+    distinct(Keyword, .keep_all = T)  # we don't want to have keywords with multiple categories
+  
+  
+  # what are going to be the suggested categories for each keyword
+  
+  cats_done_with_level1 <-
+    categorisations_done_upload %>% 
+    filter(!is.na(`Category Level1`)) %>% 
+    count(Keyword, `Category Level1`) %>% 
+    group_by(Keyword) %>% 
+    mutate(percent_of_total = n/sum(n)) %>% 
+    arrange(desc(percent_of_total)) %>% 
+    slice(1) %>% 
+    mutate(warning = if_else(percent_of_total != 1, "Multiple Categories", "Single Category")) %>% 
+    select(-n, -percent_of_total)
+  
+  
+  categories_with_level1 <-
+    categories_upload %>% 
+    filter(!is.na(`Category Level1`)) %>% 
+    group_by(Keyword) %>%
+    mutate(total_rows = n()) %>% 
+    slice(1) %>% # take the one with the level 2, if it exists
+    mutate(warning = if_else(total_rows != 1, "Multiple Categories", "Single Category")) %>% 
+    select(-total_rows) %>% 
+    bind_rows(cats_done_with_level1) %>% 
+    distinct(Keyword, .keep_all = T) %>% 
+    ungroup()
+  
+  
+  all_keywords <- initial_all_keywords %>% 
+    select(type, Keyword) %>% 
+    left_join(categories_with_level1, by = "Keyword")
+  
+  
+  previous_keywords <- initial_previous_keywords %>% 
+    left_join(categories_with_level1 %>% 
+                transmute(Keyword, `Suggested Category` = `Category Level1`)
+              , by = "Keyword")
+  
+  rm(list=setdiff(ls(), c("all_keywords", # previously established Level2 input
+                          "previous_keywords", # keywords used for detection in the new
+                          "combined_import", # imported new transactions
+                          "categorisations_done_upload" # the imported cats done
+  )))  
+  
+  ## 3. detect presence of keywords.R (~110 lines) ----
+  
+  
+  # categorisations which have had cats defined
+  done_and_have_defined_cats <- categorisations_done_upload %>% 
+    filter(!is.na(`Category Level1`))
+  
+  # categorisations with no cats defined
+  done_but_no_defined_cats <- categorisations_done_upload %>% 
+    filter(is.na(`Category Level1`))
+  
+  
+  # do any of our transaction descriptions include "category keywords"
+  items_with_keyword_options <- combined_import %>% 
+    
+    anti_join(done_and_have_defined_cats, 
+              by = c("Date", "Amount", "Description", "data_source")) %>% 
+    
+    # remove any that already appear in the cats done document 
+    # but weren't defined yet, as there may have been details added
+    
+    anti_join(done_but_no_defined_cats,
+              by = c("Date", "Amount", "Description", "data_source")) %>%  
+    
+    bind_rows(done_but_no_defined_cats %>% 
+                select(-Keyword, -`Suggested Category`, -`Category Level1`)) %>% # because we are going to be re-estimating these
+    mutate(row_id = row_number()) %>%  # we want to be careful not to duplicate rows in this process
+    
+    {if(nrow(previous_keywords) == 0) 
+      mutate(., Keyword = "~~~test", seconded = NA) else # need to put in a "something" which will certainly not be detected
+        crossing(., previous_keywords %>% select(Keyword, seconded))} %>%
+    mutate(contains_test = str_detect(toupper(Description), fixed(Keyword)),
+           contains_test = if_else(is.na(contains_test), FALSE, contains_test))
+  
+  
+  # no keyword matches
+  no_keyword_matches <- items_with_keyword_options %>%
+    group_by(row_id) %>%
+    filter(!any(contains_test == TRUE)) %>%
+    distinct(row_id, .keep_all = T) %>%
+    ungroup() %>%
+    select(-Keyword, -seconded, -contains_test, -row_id)
+  
+  
+  # received keyword matches
+  keyword_match <- items_with_keyword_options %>%
+    filter(contains_test == TRUE) %>%
+    select(-contains_test) %>%
+    group_by(row_id) %>%
+    mutate(count = n(),
+           sum_of_seconded = sum(seconded, na.rm = T),
+           no_worries = count - sum_of_seconded == 1)
+  
+  
+  # single keyword match
+  single_keyword_match <- keyword_match %>%
+    filter(count == 1) %>%
+    ungroup() %>%
+    select(-no_worries, -seconded, -count, -sum_of_seconded, -row_id)
+  
+  
+  # Has mutiple keyword matches
+  # only 1 non-Seconded
+  mutiple_keyword_matches_but_1_good <- keyword_match %>%
+    filter(count > 1 & no_worries & seconded != 1) %>%
+    ungroup() %>%
+    select(-no_worries, -seconded, -count, -sum_of_seconded, -row_id)
+  
+  
+  # no clear winning match 
+  # (i.e. multiple secondeds or multiple non-secondeds)
+  # in theory this should be rare
+  # here... add in:: pick the longest keyword....
+  
+  no_clear_winning_match <- keyword_match %>%
+    filter(count > 1 & !no_worries) %>%
+    select(-no_worries) %>%
+    distinct(row_id, .keep_all = T) %>%
+    ungroup() %>%
+    mutate(Keyword = "_Multiple_") %>% 
+    select(-seconded, -count, -sum_of_seconded, -row_id)
+  
+  
+  
+  # append them all together
+  new_and_already_done_row_items <- 
+    bind_rows(no_keyword_matches, # bind all the new rows with their relevant detected keywords
+              single_keyword_match, 
+              mutiple_keyword_matches_but_1_good, 
+              no_clear_winning_match) %>%
+    left_join(previous_keywords %>%
+                select(Keyword, `Suggested Category`),
+              by = "Keyword") %>% 
+    # then I connect these with all the other data
+    # i.e the previously categorised in cats done
+    bind_rows(categorisations_done_upload %>%
+                filter(!is.na(`Category Level1`))) %>% 
+    arrange(desc(Date)) %>% 
+    select(data_source, Date, Amount, Description, `Suggested Category`, Keyword, `Category Level1`, everything())
+  
+  
+  rm(list=setdiff(ls(), c("all_keywords", 
+                          "new_and_already_done_row_items")))
+  
+  
+  return(new_and_already_done_row_items)
+  
+  
+}
+
+
+
+
+# process uploaded files
+
+generate_keywords_sheet <- function(categorisations_done_upload,
+                                    categories_upload) {
+  
+  
+  # preparing the update of the keywords + categories table (second sheet)
+  
+  # still present in cats done
+  existing_keywords <- categories_upload %>%
+    distinct(Keyword) %>% 
+    semi_join(categorisations_done_upload,  by = "Keyword") %>%
+    mutate(type = "existing keyword")
+  
+  # No longer present in cats done sheet?
+  historical_keywords <- categories_upload %>%
+    distinct(Keyword) %>% 
+    anti_join(categorisations_done_upload, by = "Keyword") %>%
+    mutate(type = "historical keyword")
+  
+  # new (only in cats done records) 
+  new_keywords <- categorisations_done_upload %>%
+    distinct(Keyword) %>%
+    filter(!is.na(Keyword)) %>%
+    anti_join(categories_upload, by = "Keyword") %>%
+    mutate(type = "new keyword")
+  
+  
+  initial_all_keywords <- 
+    bind_rows(existing_keywords, 
+              historical_keywords, 
+              new_keywords) %>% 
+    arrange(Keyword)
+  
+  
+  
+  # what are going to be the suggested categories for each keyword
+  
+  cats_done_with_level1 <-
+    categorisations_done_upload %>% 
+    filter(!is.na(`Category Level1`)) %>% 
+    count(Keyword, `Category Level1`) %>% 
+    group_by(Keyword) %>% 
+    mutate(percent_of_total = n/sum(n)) %>% 
+    arrange(desc(percent_of_total)) %>% 
+    slice(1) %>% 
+    mutate(warning = if_else(percent_of_total != 1, "Multiple Categories", "Single Category")) %>% 
+    select(-n, -percent_of_total)
+  
+  
+  
+  
+  categories_with_level1 <-
+    categories_upload %>% 
+    filter(!is.na(`Category Level1`)) %>% 
+    group_by(Keyword) %>%
+    mutate(total_rows = n()) %>% 
+    slice(1) %>% # take the one with the level 2, if it exists
+    mutate(warning = if_else(total_rows != 1, "Multiple Categories", "Single Category")) %>% 
+    select(-total_rows) %>% 
+    bind_rows(cats_done_with_level1) %>% 
+    distinct(Keyword, .keep_all = T) %>% 
+    ungroup()
+  
+  
+  
+  all_keywords <- initial_all_keywords %>% 
+    select(type, Keyword) %>% 
+    left_join(categories_with_level1, by = "Keyword")
+  
+  
+  return(all_keywords)
+  
+  
+}
+
+
+
+
+############################################################
+
+# Forecasting functions
+
+generate_rates_table <- function(new_and_already_done_row_items, rates_import, forecast_horison_days = 370) {
+  
+  
+  amount_col_name <- as.symbol("Amount (if different going forward)")
+  reference_date_col_name <- as.symbol("A reference date -past or future")
+  limit_prev_col_name <- as.symbol("Irregular schedule transaction limit for forecasting")
+  
+  # get columns to the right type and add forcast horizon
+  # based on the latest date from all the transactions
+  
+  rates_import %>% 
+    
+    right_join(
+      
+      new_and_already_done_row_items %>% 
+        distinct(`Category Level1`) %>% 
+        filter(`Category Level1` != "IGNORE")
+      
+      , by = "Category Level1") %>% 
+    distinct(`Category Level1`, .keep_all = T) %>% 
+    
+    mutate(`Shedule|Number` = as.numeric(`Shedule|Number`),
+           `No plans for it to reoccur` = as.numeric(`No plans for it to reoccur`),
+           !!reference_date_col_name := as.Date(as.numeric(!!reference_date_col_name), origin = "1899-12-30"),
+           !!amount_col_name := as.numeric(!!amount_col_name),
+           `Shedule|Number` = if_else(is.na(`Shedule|Number`), 1, `Shedule|Number`),
+           forecast_horizon_final_date = max(new_and_already_done_row_items$Date) + forecast_horison_days)
+}
+
+
+
+regenerate_schedule_table <- function(rates, forecast_horison_days = 370) {
+  
+  # certain forecast values will have to only utilise a set number or 
+  # (from a certain date) of historical transactions
+  # to determine their on-going rates.
+  
+  amount_col_name <- as.symbol("Amount (if different going forward)")
+  reference_date_col_name <- as.symbol("A reference date -past or future")
+  limit_prev_col_name <- as.symbol("Irregular schedule transaction limit for forecasting")
+  
+  limiting_transactions <- rates %>% 
+    filter(!is.na(!!limit_prev_col_name)) %>% 
+    mutate(what_is_it = case_when(is.na(as.numeric(!!limit_prev_col_name)) ~ "not a number",
+                                  as.numeric(!!limit_prev_col_name) <= 1000 ~ "less than 1000", 
+                                  as.numeric(!!limit_prev_col_name) > 1000 ~ "greater then 1000",
+                                  TRUE ~ "other"),
+           limit_by_date = case_when(what_is_it == "not a number" ~ dmy(!!limit_prev_col_name), 
+                                     what_is_it == "greater then 1000" ~ as.Date(as.numeric(!!limit_prev_col_name), origin = "1899-12-30")),
+           limit_by_last_transactions = if_else(what_is_it == "less than 1000", as.numeric(!!limit_prev_col_name), NA_real_)) %>% 
+    select(`Category Level1`, limit_by_last_transactions, limit_by_date)
+  
+  
+  rates %>% 
+    left_join(
+      limiting_transactions %>% 
+        mutate(replacement_col = if_else(is.na(limit_by_last_transactions), format(limit_by_date, "%d/%m/%Y"), as.character(limit_by_last_transactions))) %>% 
+        select(`Category Level1`, replacement_col)
+      , by = "Category Level1") %>% 
+    {if (nrow(.) == 0) {.} else {mutate(., !!limit_prev_col_name := if_else(!is.na(replacement_col), replacement_col, !!limit_prev_col_name))}} %>% 
+    select(-replacement_col, -forecast_horizon_final_date) %>% 
+    mutate(`Shedule|Number` = if_else(`Shedule|Number` == 1, NA_real_, `Shedule|Number`)) %>% 
+    arrange(`Shedule|Timeframe`, `No plans for it to reoccur`, `Category Level1`)
+  
+}
+
+
+
+
+##############################################################################
+
+
+create_forecast_values <- function(new_and_already_done_row_items, rates, forecast_horison_days = 370) {
+  
+  # take all transactions 
+  # filter out the IGNORE cats, exclude those cats that have been specified to not recur
+  # if the cat1 isn't entered, label it UNCATEGORISED
+  
+  amount_col_name <- as.symbol("Amount (if different going forward)")
+  reference_date_col_name <- as.symbol("A reference date -past or future")
+  limit_prev_col_name <- as.symbol("Irregular schedule transaction limit for forecasting")
+  
+  
+  initial_summary <- new_and_already_done_row_items %>% 
+    
+    # don't think we need this anymore
+    mutate(`Category Level1` = case_when(is.na(`Category Level1`) & Amount < 0 ~ "UNCATEGORISED EXPENSE",
+                                         is.na(`Category Level1`) & Amount > 0 ~ "UNCATEGORISED INCOME",
+                                         TRUE ~ `Category Level1`)) %>% 
+    
+    # nor this....
+    filter(`Category Level1` != "IGNORE") %>% 
+    filter(data_source != "cash") %>% 
+    
+    
+    anti_join(rates %>% filter(!is.na(`No plans for it to reoccur`)), by = "Category Level1") %>% 
+    arrange(desc(Date)) %>% 
+    group_by(`Category Level1`) %>% 
+    mutate(min_date = min(Date),
+           max_date = max(Date),
+           days_between_min_and_max = as.numeric(max_date - min_date),
+           new_cat_level1 = if_else(days_between_min_and_max == 0, 
+                                    "CAT1 BUCKET", `Category Level1`)) %>% 
+    ungroup()
+  
+  
+  
+  # specified forecasts that exist in the transactions
+  # restrict to only those with shedules entered, already.
+  # keep only the latest entry (by the distinct())
+  
+  specified_forecasts <- initial_summary %>% 
+    inner_join(rates %>% filter(!is.na(`Shedule|Timeframe`)), by = "Category Level1") %>% 
+    distinct(`Category Level1`, .keep_all = T) %>% 
+    mutate(on_going_amount = if_else(!is.na(!!amount_col_name), !!amount_col_name, Amount),
+           latest_date = if_else(!is.na(!!reference_date_col_name), !!reference_date_col_name, Date),
+           latest_date = if_else(latest_date >= Date, latest_date, Date)) %>% 
+    select(latest_date, `Category Level1`, `Shedule|Number`, `Shedule|Timeframe`, on_going_amount, forecast_horizon_final_date) %>% 
+    
+    # but what if our scheduled item didn't exist in the transactions? 
+    # Let's make it so we can add these future schedules in
+    bind_rows(
+      rates %>% 
+        filter(!is.na(!!reference_date_col_name)) %>% 
+        anti_join(initial_summary, by = "Category Level1") %>% 
+        mutate(latest_date = !!reference_date_col_name,
+               on_going_amount = !!amount_col_name) %>% 
+        select(latest_date, `Category Level1`, `Shedule|Number`, `Shedule|Timeframe`, on_going_amount, forecast_horizon_final_date)
+    ) %>% 
+    
+    mutate(Date = map2(latest_date + 1, forecast_horizon_final_date, ~seq.Date(.x, .y, 1))) %>% 
+    unnest(Date) %>% 
+    group_by(`Category Level1`) %>% 
+    mutate(months_out = map2_int(latest_date, Date, ~length(seq(.x, .y, by = "month"))-1L),
+           total_days = row_number()) %>% 
+    group_by(`Category Level1`, months_out) %>% 
+    mutate(days_out = row_number()) %>% 
+    group_by(`Category Level1`) %>% 
+    mutate(weeks_out = total_days %/% 7,
+           days_out = if_else(months_out == 0, days_out, days_out - 1L),
+           day_in_week = total_days - weeks_out*7) %>% 
+    mutate(keep_row = case_when(`Shedule|Timeframe` == "Year" ~ months_out == 12 & days_out == 0,
+                                `Shedule|Timeframe` == "Month" ~ days_out == 0, 
+                                `Shedule|Timeframe` == "Week" ~ day_in_week == 0,
+                                `Shedule|Timeframe` == "Day" ~ TRUE)) %>% 
+    filter(keep_row) %>%
+    mutate(multiple_of_rate = row_number() %/% `Shedule|Number`) %>% 
+    group_by(`Category Level1`, multiple_of_rate) %>% 
+    mutate(keep_row = multiple_of_rate != 0 & row_number() == 1) %>% 
+    filter(keep_row) %>%
+    ungroup() %>% 
+    
+    # here is where the cat levels are being restricted
+    select(Date, `Category Level1`, Amount = on_going_amount) %>% 
+    mutate(data_source = "FORECAST",
+           Description = "FIXED SCHEDULE")
+  
+  
+  
+  # certain forecast values will have to only utilise a set number or (from a certain date) of historical transactions
+  # to determine their on-going rates.
+  
+  
+  limiting_transactions <- rates %>% 
+    filter(!is.na(!!limit_prev_col_name)) %>% 
+    mutate(what_is_it = case_when(is.na(as.numeric(!!limit_prev_col_name)) ~ "not a number",
+                                  as.numeric(!!limit_prev_col_name) <= 1000 ~ "less than 1000", 
+                                  as.numeric(!!limit_prev_col_name) > 1000 ~ "greater then 1000",
+                                  TRUE ~ "other"),
+           limit_by_date = case_when(what_is_it == "not a number" ~ dmy(!!limit_prev_col_name), 
+                                     what_is_it == "greater then 1000" ~ as.Date(as.numeric(!!limit_prev_col_name), origin = "1899-12-30")),
+           limit_by_last_transactions = if_else(what_is_it == "less than 1000", as.numeric(!!limit_prev_col_name), NA_real_)) %>% 
+    select(`Category Level1`, limit_by_last_transactions, limit_by_date)
+  
+  
+  
+  # now let's handle those transactions that do not have schedules
+  # first filter out those transactions which the forecast is not going to be based on
+  
+  grouped_amounts <- initial_summary %>% 
+    anti_join(specified_forecasts, by = "Category Level1") %>% 
+    left_join(limiting_transactions, by = "Category Level1") %>%   # do I need to add a group_by here, for the row_number step below?
+    mutate(within_range_filter = case_when(!is.na(limit_by_date) ~ Date >= limit_by_date,
+                                           !is.na(limit_by_last_transactions) ~ row_number() <= limit_by_last_transactions, 
+                                           TRUE ~ TRUE)) %>% 
+    filter(within_range_filter) %>% 
+    select(-within_range_filter) %>% 
+    group_by(new_cat_level1) %>% 
+    mutate(is_max_date = Date == max(Date)) %>% 
+    summarise(total_spend_prior_to_latest_day = sum(Amount[is_max_date == F]),
+              min_date = min(Date),
+              max_date = max(Date),
+              days_between_min_and_max = as.numeric(max_date - min_date),
+              spend_per_day = total_spend_prior_to_latest_day/days_between_min_and_max)
+  
+  
+  total_for_bucket <- grouped_amounts %>% 
+    filter(new_cat_level1 == "CAT1 BUCKET") %>% 
+    select(new_cat_level1, spend_per_day)
+  
+  
+  # what are the overall contributions of each cat level 1 to the CAT1 Bucket?
+  bucket_cat1_proportions <- initial_summary %>% 
+    anti_join(specified_forecasts, by = "Category Level1") %>% 
+    filter(new_cat_level1 == "CAT1 BUCKET") %>% 
+    group_by(new_cat_level1, `Category Level1`) %>% 
+    summarise(amount_per_cat1 = sum(Amount)) %>% 
+    left_join(total_for_bucket, by = "new_cat_level1") %>% 
+    mutate(total_in_bucket = sum(amount_per_cat1),
+           proportion = amount_per_cat1/total_in_bucket,
+           proportional_spend_per_day = spend_per_day * proportion) %>% 
+    ungroup() %>% 
+    select(new_cat_level1, `Category Level1`, proportional_spend_per_day)
+  
+  
+  
+  grouped_amounts %>% 
+    left_join(bucket_cat1_proportions, by = "new_cat_level1") %>% 
+    mutate(`Category Level1` = if_else(is.na(`Category Level1`), new_cat_level1, `Category Level1`),
+           Amount = if_else(is.na(proportional_spend_per_day), spend_per_day, proportional_spend_per_day)) %>% 
+    mutate(data_source = "FORECAST",
+           Description = if_else(new_cat_level1 == "CAT1 BUCKET", "BUCKETED ESTIMATE", "CATEGORY ESTIMATE"),
+           max_of_all_dates = max(max_date),
+           Date = map2(max_date + 1, max_of_all_dates + forecast_horison_days, ~seq.Date(.x, .y, 1))) %>% 
+    unnest(Date) %>% 
+    select(data_source, Date, `Category Level1`, Description, Amount) %>% 
+    bind_rows(specified_forecasts) %>% 
+    arrange(Date)
+}
+
+
+
+
+
+generate_time_period_dates_table <- function(period_of_timeframe, timeframe_type, max_date) {
+  
+  tibble(review_timeframe_options = period_of_timeframe, timeframe_type_options = timeframe_type) %>% 
+    mutate(current_end_date = case_when(timeframe_type_options != 2 ~ max_date, 
+                                        review_timeframe_options == 7 | review_timeframe_options == 14 ~ floor_date(max_date, "week", week_start = 1)-1, 
+                                        review_timeframe_options == 30 ~ floor_date(max_date, "month")-1),
+           current_start_date = case_when(timeframe_type_options == 1 ~ current_end_date-(review_timeframe_options-1),
+                                          review_timeframe_options == 7 ~ floor_date(current_end_date, "week", week_start = 1), 
+                                          review_timeframe_options == 14 ~ floor_date(current_end_date, "week", week_start = 1)-7,
+                                          review_timeframe_options == 30 ~ floor_date(current_end_date, "month")),
+           current_difference = as.integer(current_end_date - current_start_date),
+           
+           comparison_end_date = if_else(timeframe_type_options != 3, current_start_date - 1,
+                                         case_when(review_timeframe_options == 7 ~ floor_date(current_start_date - 1, "week", week_start = 1) + current_difference, 
+                                                   review_timeframe_options == 14 ~ floor_date(current_start_date - 1, "week", week_start = 1)-7 + current_difference,
+                                                   review_timeframe_options == 30 ~ floor_date(current_start_date - 1, "month") + current_difference)),
+           
+           comparison_start_date = case_when(timeframe_type_options == 1 ~ comparison_end_date-(review_timeframe_options-1),
+                                             review_timeframe_options == 7 ~ floor_date(comparison_end_date, "week", week_start = 1), 
+                                             review_timeframe_options == 14 ~ floor_date(comparison_end_date, "week", week_start = 1)-7,
+                                             review_timeframe_options == 30 ~ floor_date(comparison_end_date, "month"))
+           , comparison_difference = as.integer(comparison_end_date - comparison_start_date)) %>% 
+    select(-review_timeframe_options, -timeframe_type_options) %>%
+    gather(key, value, -current_difference, -comparison_difference)
+  
+}
+
+
+
+
+new_and_already_done_row_items <- 
+  reactive( 
+    combined_import() %>% 
+      {if (is.null(input$categorisation_file) & input$retrieve_from_google_sheets == 0) 
+        
+      {
+        
+        mutate(., 'Suggested Category' = NA_character_, Keyword = NA_character_, `Category Level1` = NA_character_)
+        
+      } else 
+      {
+        combine_transactions_with_historical(., categorisations_done_upload(), categories_upload())
+      } %>% 
+          select(data_source, everything())
+      })
+
+
+keywords_newly_created <- 
+  reactive( 
+    generate_keywords_sheet(categorisations_done_upload(),
+                            categories_upload()))
+
+
+```
+
+
+
+Row
+-------------------------------------
+
+### # Transactions (by day)
+
+```{r}
+
+all_transactions_plot <- reactive(new_and_already_done_row_items() %>%
+                                    mutate(week_date = floor_date(Date, "week", week_start = 1),
+                                           week_and_source = paste0(week_date, "|", data_source)) %>% 
+                                    count(Date, data_source) %>%
+                                    ggplot() +
+                                    aes(Date, n, fill = data_source, key = Date) +
+                                    geom_bar(stat = "identity") +
+                                    labs(x = NULL, y = NULL) +
+                                    {if (length(min_date_selection()) != 0) 
+                                    {geom_bar(data = . %>% filter(Date < min_date_selection()[[1]]), stat = "identity", alpha = 0.4, fill = "white", show.legend = FALSE)} else {NULL}}
+                                  +
+                                    {if (length(min_date_selection()) != 0) 
+                                    {geom_vline(xintercept = as.numeric(as.Date(min_date_selection()[[1]])), linetype = "dashed")} else {NULL}})
+
+
+
+renderPlotly(
+  
+  {if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    
+    
+    all_transactions_plot() %>%
+      ggplotly(source = "all_transactions_plot") %>%
+      config(displayModeBar = F) %>%
+      layout(xaxis=list(fixedrange=TRUE)) %>%
+      layout(yaxis=list(fixedrange=TRUE))
+    
+  }})
+
+
+
+
+
+```
+
+Row
+-------------------------------------
+
+### # Transactions (by week)
+
+```{r}
+
+min_date_selection <- reactive(event_data("plotly_click", source = "all_transactions_plot")["key"])
+
+
+line_chart_by_week_plot <- reactive(
+  
+  if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    
+    new_and_already_done_row_items() %>%
+      mutate(week_date = floor_date(Date, "week", week_start = 1),
+             week_and_source = paste0(week_date, "|", data_source)) %>% 
+      {if (length(min_date_selection()) != 0) {filter(., Date >= min_date_selection()[[1]])} else {.}} %>% 
+      mutate(Date = week_date) %>%
+      count(week_and_source, Date, data_source) %>% 
+      ggplot() +
+      aes(Date, n, col = data_source) +
+      geom_line(stat = "identity") +
+      geom_point(aes(Date, n, col = data_source, key = week_and_source), stat = "identity") + # see if you can add a slight jitter, so dots on top of each otehr can be clicked 
+      theme(legend.position = "none") +
+      labs(x = NULL, y = NULL)
+  })
+
+
+
+renderPlotly( 
+  {if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    
+    line_chart_by_week_plot() %>%
+      ggplotly(source = "line_chart_by_week") %>%
+      config(displayModeBar = F) %>% 
+      layout(xaxis=list(fixedrange=TRUE)) %>% 
+      layout(yaxis=list(fixedrange=TRUE))
+    
+  }})
+
+
+
+
+
+```   
+
+
+
+
+
+
+### Transactions
+
+```{r}
+
+min_date_selection_for_transactions <- reactive(event_data("plotly_click", source = "line_chart_by_week")["key"])
+
+# if a click event in the second chart has happend... further restrict
+# if Cats done dfile loaded, remove IGNORE rows
+
+
+data_going_forward <- reactive(
+  new_and_already_done_row_items() %>%
+    mutate(week_date = floor_date(Date, "week", week_start = 1),
+           week_and_source = paste0(week_date, "|", data_source)) %>% 
+    {if (length(min_date_selection()) != 0) {filter(., Date >= min_date_selection()[[1]])} else {.}} %>% 
+    
+    {if (!is.null(input$categorisation_file) | !input$retrieve_from_google_sheets == 0)
+      
+    {filter(., is.na(`Category Level1`) | `Category Level1` != "IGNORE") %>% 
+        left_join(rates_for_saving() %>%
+                    select(`Category Level1`, `Category Level2`, `Category Level3`)
+                  , by = "Category Level1") %>% 
+        mutate(`Category Level1` = case_when(is.na(`Category Level1`) & Amount < 0 ~ "UNCATEGORISED EXPENSE",
+                                             is.na(`Category Level1`) &  Amount > 0 ~ "UNCATEGORISED INCOME",
+                                             TRUE ~ `Category Level1`),
+               `Category Level2` = case_when(is.na(`Category Level2`) & Amount < 0 ~ "UNCATEGORISED EXPENSE",
+                                             is.na(`Category Level2`) &  Amount > 0 ~ "UNCATEGORISED INCOME",
+                                             TRUE ~ `Category Level2`),
+               `Category Level3` = case_when(is.na(`Category Level3`) & Amount < 0 ~ "EXPENSE",
+                                             is.na(`Category Level3`) &  Amount > 0 ~ "INCOME",
+                                             TRUE ~ `Category Level3`)) } else {  
+                                               
+                                               mutate(., `Category Level1` = case_when(Amount < 0 ~ "UNCATEGORISED EXPENSE",
+                                                                                       Amount > 0 ~ "UNCATEGORISED INCOME"),
+                                                      `Category Level2` = case_when(Amount < 0 ~ "UNCATEGORISED EXPENSE",
+                                                                                    Amount > 0 ~ "UNCATEGORISED INCOME"),
+                                                      `Category Level3` = case_when(Amount < 0 ~ "EXPENSE",
+                                                                                    Amount > 0 ~ "INCOME")) 
+                                             }} 
+)
+
+
+
+table_for_first_DT <- reactive( 
+  
+  data_going_forward() %>%
+    {if (length(min_date_selection_for_transactions()) != 0) {filter(., week_and_source == min_date_selection_for_transactions()[[1]])} else {.}} %>%
+    select(Date, Description, Amount) %>% 
+    arrange(desc(abs(Amount))))
+
+
+renderDataTable(
+  
+  {if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    
+    
+    datatable(table_for_first_DT(),
+              rownames = F,
+              options =
+                list(
+                  # dom = "t,
+                  pageLength = 20, scrollY = "300px")) %>%
+      
+      formatDate("Date", "toDateString") %>%
+      formatCurrency("Amount",  digits = 0) %>%
+      formatStyle('Amount',
+                  background = styleColorBar(table_for_first_DT()$Amount, 'steelblue'),
+                  backgroundSize = '100% 90%',
+                  backgroundRepeat = 'no-repeat',
+                  backgroundPosition = 'center')}}
+)
+
+
+
+```
+
+
+
+Expenses
+===================================== 
+
+
+SideBar {.sidebar}
+---
+
+```{r}
+
+br()
+
+actionButton("retrieve_from_google_sheets_2", "Retrieve (from GS)", icon = icon("download", "fa"))
+
+
+review_timeframe_options <- c("Week" = 7, "Fortnight" = 14, "Month or 30 days" = 30, "(All records)" = 0)
+timeframe_type_options <- c("Latest" = 1, "Current (up till now)" = 3, "Last complete" = 2)
+metric_options <- c("Weekly" = "avg_weekly_spend", "Daily" = "avg_daily_spend")
+
+
+
+
+radioButtons("review_timeframe",
+             "Review timeframe", 
+             choices = review_timeframe_options, 
+             selected = review_timeframe_options[1])
+
+radioButtons("timeframe_type",
+             "Timeframe type", 
+             choices = timeframe_type_options, 
+             selected = timeframe_type_options[1])
+
+
+radioButtons("avg_metric_selection",
+             "Avg expenditure metric", 
+             choices = metric_options, 
+             selected = metric_options[1])
+
+
+
+br()
+br()
+br()
+br()
+
+
+
+Level3_options <- reactive(
+  if (nrow(new_and_already_done_row_items()) == 0) {"(All)"} else {
+    c("(All)", sort(unique(data_going_forward()$`Category Level3`)))}
+)
+
+renderUI(
+  radioButtons("Level3_options",
+               "Level3_options", 
+               choices = Level3_options(), 
+               selected = Level3_options()[1])
+)
+
+
+
+
+
+
+Level2_options <- reactive(if (input$Level3_options == "(All)") {
+  data_going_forward() %>%
+    pull(`Category Level2`) %>%
+    unique() %>% 
+    sort()} else {
+      
+      data_going_forward() %>%
+        filter(`Category Level3` == input$Level3_options) %>%
+        pull(`Category Level2`) %>%
+        unique() %>% 
+        sort()
+    })
+
+
+
+
+# this select all box can replace the one below..
+# just need to learn all the different options to make it look better.
+# 
+# renderUI(
+#   if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+#     
+# pickerInput(
+#   inputId = "Level2_options", 
+#   label = "Level2_options", 
+#   choices = Level2_options(), 
+#   options = list(
+#     `actions-box` = TRUE
+#   ), 
+#   multiple = TRUE
+# )})
+
+
+renderUI(
+  if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    actionLink("selectall_1","Select All")
+  })
+
+
+renderUI(
+  if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    
+    checkboxGroupInput("Level2_options",
+                       "Level2_options",
+                       choices = Level2_options(),
+                       selected = Level2_options())
+    
+  })
+
+
+observe({
+  req(input$selectall_1)
+  req(Level2_options())
+  
+  if (input$selectall_1 == 0) {NULL} else {if (input$selectall_1 %% 2 == 0) {
+    updateCheckboxGroupInput(session, "Level2_options","Level2_options", choices = Level2_options(), selected = Level2_options())
+  } else {
+    updateCheckboxGroupInput(session, "Level2_options","Level2_options", choices = Level2_options(), selected = NULL)
+  }}
+})
+
+
+
+
+
+
+
+
+
+
+
+br()
+
+
+Level1_options <- reactive(if (input$Level3_options == "(All)" & (length(input$Level2_options) == 0 | length(input$Level2_options) == length(Level2_options()))) {
+  data_going_forward() %>%
+    pull(`Category Level1`) %>%
+    unique() %>% 
+    sort()} else {
+      
+      data_going_forward() %>%
+        filter(., `Category Level2` %in% input$Level2_options) %>%
+        pull(`Category Level1`) %>%
+        unique() %>% 
+        sort()
+    })
+
+
+
+renderUI(
+  if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    actionLink("selectall_2","Select All")   
+  })
+
+
+renderUI(
+  if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    
+    checkboxGroupInput("Level1_options",
+                       "Level1_options",
+                       choices = Level1_options(),
+                       selected = Level1_options())
+    
+  })
+
+
+
+observe({
+  req(input$selectall_2)
+  req(Level1_options())
+  
+  if (input$selectall_2 == 0) {NULL} else {if (input$selectall_2 %% 2 == 0) {
+    updateCheckboxGroupInput(session, "Level1_options","Level1_options", choices = Level1_options(), selected = Level1_options())
+  } else {
+    updateCheckboxGroupInput(session, "Level1_options","Level1_options", choices = Level1_options(), selected = NULL)
+  }}
+})
+
+
+
+
+
+```
+
+
+
+
+```{r}
+
+
+
+
+# let's get the data all prepped
+
+data_for_period <- reactive(data_going_forward() %>% 
+                              filter(is.na(`Category Level1`) | `Category Level1` != "INCOME") %>% 
+                              filter(data_source != "cash"))
+
+period_of_timeframe <- reactive(as.numeric(input$review_timeframe))
+timeframe_type <- reactive(as.numeric(input$timeframe_type))
+
+max_date <- reactive(max(data_for_period()$Date))
+min_date <- reactive(min(data_for_period()$Date))
+
+
+dates_table_first <- reactive(generate_time_period_dates_table(period_of_timeframe(), timeframe_type(), max_date()))
+
+
+dates_table <- reactive(
+  dates_table_first() %>% 
+    select(-current_difference, -comparison_difference) %>% 
+    deframe())
+
+
+cumulative_spending_table <- reactive(
+  data_for_period() %>% 
+    
+    {if (input$Level3_options == "(All)") {.} else
+    {filter(., `Category Level3` == input$Level3_options)} } %>%
+    
+    {if (length(input$Level2_options) == 0 | length(input$Level2_options) == length(Level2_options())) {.} else
+    {filter(., `Category Level2` %in% input$Level2_options)} } %>%
+    
+    {if (length(input$Level1_options) == 0 | length(input$Level1_options) == length(Level1_options())) {.} else
+    {filter(., `Category Level1` %in% input$Level1_options)} } %>%  
+    
+    group_by(Date) %>% 
+    summarise(total_expenses = -sum(Amount)) %>%
+    ungroup() %>% 
+    right_join(tibble(Date = seq.Date(min_date(), max_date(), by = "day")), by = "Date") %>% 
+    arrange(Date) %>% 
+    mutate(total_expenses = if_else(is.na(total_expenses), 0, total_expenses),
+           analysis_period = case_when(Date >= dates_table()["current_start_date"] & Date <= dates_table()["current_end_date"] ~ "current",
+                                       Date >= dates_table()["comparison_start_date"] & Date <= dates_table()["comparison_end_date"] ~ "comparison",
+                                       TRUE ~ "Other"),
+           
+           cumulative_expenses = cumsum(total_expenses),
+           lag_expenses = lag(cumulative_expenses, period_of_timeframe()),
+           dif_from_lag_expenses = cumulative_expenses - lag_expenses,
+           timeframe = period_of_timeframe(),
+           avg_daily_spend = dif_from_lag_expenses/timeframe,
+           avg_weekly_spend = avg_daily_spend*7) 
+)
+
+
+```
+
+
+
+Row {data-width=600}
+------
+
+### Expenses
+```{r}
+
+daily_actuals_plot <- reactive( 
+  cumulative_spending_table() %>% 
+    ggplot() +
+    aes(Date, total_expenses, fill = analysis_period, label = total_expenses, key = Date) +
+    geom_bar(stat = "identity") +
+    labs(x = NULL, y = NULL) +
+    theme(legend.position = "none")
+  # ggrepel::geom_text_repel() # format as $, only show occaisional ones
+)
+
+
+
+renderPlotly(
+  {if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    
+    daily_actuals_plot() %>%
+      ggplotly(source = "daily_actuals_plot") %>%
+      config(displayModeBar = F) %>%
+      layout(xaxis=list(fixedrange=TRUE)) %>%
+      layout(yaxis=list(fixedrange=TRUE))
+  }})
+
+
+```
+
+
+
+### Transactions
+
+```{r}
+
+daily_actuals_plot_value <- reactive(event_data("plotly_click", source = "daily_actuals_plot")["key"])
+
+new_data_for_period <- reactive( 
+  
+  data_for_period() %>%
+    
+    {if (input$Level3_options == "(All)") {.} else
+    {filter(., `Category Level3` == input$Level3_options)} } %>%
+    
+    {if (length(input$Level2_options) == 0 | length(input$Level2_options) == length(Level2_options())) {.} else
+    {filter(., `Category Level2` %in% input$Level2_options)} } %>%
+    
+    {if (length(input$Level1_options) == 0 | length(input$Level1_options) == length(Level1_options())) {.} else
+    {filter(., `Category Level1` %in% input$Level1_options)} } %>%  
+    
+    {if (length(daily_actuals_plot_value()) != 0) 
+    {filter(., Date == daily_actuals_plot_value()[[1]])} else {.}} %>%
+    
+    select(Date, Description, Amount) %>% 
+    arrange(desc(abs(Amount))))
+
+
+
+
+renderDataTable(
+  
+  {if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    
+    datatable(new_data_for_period(), 
+              rownames = F,
+              options = 
+                list(
+                  # dom = "t,
+                  pageLength = 20, scrollY = "300px")) %>% 
+      
+      formatDate("Date", "toDateString") %>% 
+      formatCurrency("Amount",  digits = 0) %>% 
+      formatStyle('Amount',
+                  background = styleColorBar(new_data_for_period()$Amount, 'steelblue'),
+                  backgroundSize = '100% 90%',
+                  backgroundRepeat = 'no-repeat',
+                  backgroundPosition = 'center')}}
+)
+
+
+
+```
+
+
+Row {data-width=400}
+------
+
+
+### Cumulative expenses
+```{r}
+
+
+data_for_cumulations <- reactive(
+  cumulative_spending_table() %>% 
+    {if (input$review_timeframe == 0) {
+      mutate(., enough_dates_col = TRUE) 
+    } else {
+      filter(., analysis_period != "Other") %>% 
+        mutate(enough_dates_col = case_when(min_date() <= dates_table()["comparison_start_date"] ~ TRUE,
+                                            min_date() <= dates_table()["current_start_date"] ~ analysis_period == "current",
+                                            min_date() > dates_table()["current_start_date"] ~ FALSE))}} %>%
+    group_by(analysis_period) %>% 
+    mutate(cumulative_expenses = cumsum(total_expenses)) %>% 
+    ungroup() 
+)
+
+
+
+only_period_start_points <- reactive(
+  data_for_cumulations() %>% 
+    group_by(analysis_period) %>% 
+    slice(1) %>% 
+    ungroup() %>% 
+    select(analysis_period, Date, cumulative_expenses, enough_dates_col) %>% 
+    bind_rows(mutate(., cumulative_expenses = 0))
+)
+
+
+
+cumulative_expenses_plot <- reactive(
+  data_for_cumulations() %>% 
+    ggplot() +
+    aes(Date, cumulative_expenses, col = analysis_period) +
+    
+    {if (nrow(filter(data_for_cumulations(), enough_dates_col)) == 0) {NULL} else     
+    {geom_line(data = . %>% filter(enough_dates_col), stat = "identity")}} +
+    
+    {if (nrow(filter(data_for_cumulations(), enough_dates_col)) == 0) {NULL} else     
+    {geom_line(data = filter(only_period_start_points(), enough_dates_col), stat = "identity")}} +
+    
+    {if (nrow(filter(data_for_cumulations(), !enough_dates_col)) == 0) {NULL} else 
+    {geom_line(data = filter(data_for_cumulations(), !enough_dates_col), stat = "identity", linetype = "dashed")}} +
+    
+    {if (nrow(filter(data_for_cumulations(), !enough_dates_col)) == 0) {NULL} else 
+    {geom_line(data = filter(only_period_start_points(), !enough_dates_col), stat = "identity", linetype = "dashed")}} +
+    
+    geom_point(data = . %>% group_by(analysis_period) %>% filter(Date == max(Date)), stat = "identity") +
+    
+    
+    labs(x = NULL, y = NULL) +
+    theme(legend.position = "none"))
+
+
+
+renderPlotly(
+  {if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    
+    cumulative_expenses_plot() %>%
+      ggplotly() %>%
+      config(displayModeBar = F) %>%
+      layout(xaxis=list(fixedrange=TRUE)) %>%
+      layout(yaxis=list(fixedrange=TRUE))
+  }})
+
+
+```
+
+
+```{r}
+
+# data for value boxes
+
+value_box_values <- reactive(data_for_cumulations() %>% 
+                               group_by(enough_dates_col, analysis_period) %>% 
+                               summarise(total_spend = sum(total_expenses),
+                                         avg_daily_spend = mean(total_expenses)) %>% 
+                               mutate(avg_weekly_spend = avg_daily_spend*7) %>% 
+                               gather(metric, value, -analysis_period, -enough_dates_col) %>% 
+                               mutate(value = scales::dollar(value, accuracy = 1),
+                                      value = if_else(enough_dates_col, value, paste0(value,"*"))) %>% 
+                               spread(metric, value)
+)
+
+
+```
+
+
+
+
+### Current period (total spend)
+```{r}
+
+renderValueBox(
+  
+  if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    
+    valueBox(
+      
+      value_box_values() %>% 
+        {if (input$review_timeframe == 0) {.} else {filter(., analysis_period == "current")}} %>% 
+        pull(total_spend)
+      
+      , icon = "fa-pencil")
+  } )
+
+
+```
+
+
+
+### Comparison period (total spend)
+```{r}
+
+
+renderValueBox(
+  
+  if (nrow(new_and_already_done_row_items()) == 0 | input$review_timeframe == 0) {NULL} else {
+    
+    valueBox(
+      
+      value_box_values() %>% 
+        filter(analysis_period == "comparison") %>% 
+        pull(total_spend)
+      
+      , icon = "fa-pencil")
+  } )
+
+
+
+```
+
+
+
+
+
+
+
+### Avg expenditure
+
+```{r}
+
+rolling_avg_expenditure <- reactive(
+  
+  data_for_cumulations() %>% 
+    {if (input$review_timeframe == 0) {
+      mutate(., avg_daily_spend = sum(total_expenses) / n(),
+             avg_weekly_spend = avg_daily_spend*7)} else {.}} %>% 
+    ggplot() +
+    aes_string("Date", input$avg_metric_selection, col = "analysis_period") +
+    geom_line(stat = "identity") +
+    geom_point(data = . %>% group_by(analysis_period) %>% filter(Date == max(Date)), stat = "identity") +
+    labs(x = NULL, y = NULL) +
+    theme(legend.position = "none")
+)
+
+
+
+renderPlotly(
+  {if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    
+    rolling_avg_expenditure() %>%
+      ggplotly() %>%
+      config(displayModeBar = F) %>%
+      layout(xaxis=list(fixedrange=TRUE)) %>%
+      layout(yaxis=list(fixedrange=TRUE))
+  }})
+
+
+```
+
+
+
+### Current Period (spend rate)
+```{r}
+
+
+renderValueBox(
+  
+  if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    
+    valueBox(
+      
+      value_box_values() %>% 
+        {if (input$review_timeframe == 0) {.} else {filter(., analysis_period == "current")}} %>% 
+        pull(!! as.symbol(input$avg_metric_selection))
+      , caption = if (input$avg_metric_selection == "avg_weekly_spend") {"Current Period (Weekly spend rate)"} else {"Current Period (Daily spend rate)"}
+      
+      , icon = "fa-pencil")
+  } )
+
+```
+
+
+
+### Comparison period (spend rate)
+```{r}
+
+renderValueBox(
+  
+  if (nrow(new_and_already_done_row_items()) == 0 | input$review_timeframe == 0) {NULL} else {
+    
+    valueBox(
+      
+      value_box_values() %>% 
+        filter(analysis_period == "comparison") %>% 
+        pull(!! as.symbol(input$avg_metric_selection))
+      , caption = if (input$avg_metric_selection == "avg_weekly_spend") {"Comparison Period (Weekly spend rate)"} else {"Comparison Period (Daily spend rate)"}
+      , icon = "fa-pencil")
+  } )
+
+```
+
+
+
+Forecast
+===================================== 
+
+
+SideBar {.sidebar}
+---
+
+```{r}
+
+# start date
+miniumum_forecast_value <- reactive(
+  if (nrow(new_and_already_done_row_items()) == 0) 
+  {Sys.Date()} else 
+  {max(data_going_forward()$Date) + 1}
+)
+
+renderUI(
+  dateInput("min_date_of_forecast",
+            label = "Forecast start:",
+            value = miniumum_forecast_value(),
+            min = miniumum_forecast_value(),
+            max = miniumum_forecast_value() + 300)
+)
+
+
+# months_into the future...
+sliderInput("months_ahead",
+            "Forecast horizon:",
+            min = 1, max = 12,
+            post = " months",
+            value = 6, 
+            step = 1)
+
+
+level_options <- rev(c("Level 1" = "Category Level1", 
+                       "Level 2" = "Category Level2", 
+                       "Level 3" = "Category Level3"))
+
+
+radioButtons("display_level_id",
+             "Display level:", 
+             choices = level_options, 
+             selected = level_options[1])
+
+
+
+
+renderUI(
+  if (input$display_level_id != level_options[1]) {NULL} else {
+    # savings box
+    numericInput("savings_id", "Savings in the bank", 0)
+  }) 
+
+
+
+Level3_options_2 <- reactive(
+  if (nrow(new_and_already_done_row_items()) == 0) {"(All)"} else {
+    c("(All)", sort(unique(forecast_table_for_saving()$`Category Level3`)))}
+)
+
+
+renderUI(
+  radioButtons("Level3_options_2",
+               "Level3_options", 
+               choices = Level3_options_2(), 
+               selected = input$Level3_options[1])
+)
+
+
+
+Level2_options_2 <- reactive(if (input$Level3_options_2 == "(All)") {
+  forecast_table_for_saving() %>%
+    pull(`Category Level2`) %>%
+    unique() %>% 
+    sort()} else {
+      
+      forecast_table_for_saving() %>%
+        filter(`Category Level3` == input$Level3_options_2) %>%
+        pull(`Category Level2`) %>%
+        unique() %>% 
+        sort()
+    })
+
+
+renderUI(
+  if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    actionLink("selectall_A","Select All")
+  })
+
+renderUI(
+  if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    
+    checkboxGroupInput("Level2_options_2",
+                       "Level2_options",
+                       choices = Level2_options_2(),
+                       selected = Level2_options_2())
+    
+  })
+
+
+
+observe({
+  req(input$selectall_A)
+  req(Level2_options_2())
+  
+  if (input$selectall_A == 0) {NULL} else {if (input$selectall_A %% 2 == 0) {
+    updateCheckboxGroupInput(session, "Level2_options_2","Level2_options", choices = Level2_options_2(), selected = Level2_options_2())
+  } else {
+    updateCheckboxGroupInput(session, "Level2_options_2","Level2_options", choices = Level2_options_2(), selected = NULL)
+  }}
+})
+
+
+
+
+Level1_options_2 <- reactive(if (input$Level3_options_2 == "(All)" & (length(input$Level2_options_2) == 0 | length(input$Level2_options_2) == length(Level2_options_2()))) {
+  forecast_table_for_saving() %>%
+    pull(`Category Level1`) %>%
+    unique() %>% 
+    sort()} else {
+      
+      forecast_table_for_saving() %>%
+        filter(`Category Level2` %in% input$Level2_options_2) %>%
+        pull(`Category Level1`) %>%
+        unique() %>% 
+        sort()
+    })
+
+
+renderUI(
+  if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    actionLink("selectall_B","Select All")
+  })
+
+renderUI(
+  if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    
+    checkboxGroupInput("Level1_options_2",
+                       "Level1_options",
+                       choices = Level1_options_2(),
+                       selected = Level1_options_2())
+    
+  })
+
+
+
+
+observe({
+  req(input$selectall_B)
+  req(Level1_options_2())
+  
+  if (input$selectall_B == 0) {NULL} else {if (input$selectall_B %% 2 == 0) {
+    updateCheckboxGroupInput(session, "Level1_options_2","Level1_options", choices = Level1_options_2(), selected = Level1_options_2())
+  } else {
+    updateCheckboxGroupInput(session, "Level1_options_2","Level1_options", choices = Level1_options_2(), selected = NULL)
+  }}
+})
+
+
+
+
+```
+
+
+
+```{r}
+
+
+# let's prep the data
+
+forecast_horison_days <- 370
+
+rates <- reactive( generate_rates_table(new_and_already_done_row_items(), rates_import(), forecast_horison_days))
+rates_for_saving <- reactive( regenerate_schedule_table(rates(), forecast_horison_days))
+
+
+
+forecast_date_display_limit <- reactive(
+  as.Date(input$min_date_of_forecast + duration(input$months_ahead, "months"))
+)
+
+
+
+forecast_table_for_saving <- reactive(
+  create_forecast_values(data_going_forward(), rates(), forecast_horison_days) %>% 
+    left_join(rates_for_saving() %>%
+                select(`Category Level1`, `Category Level2`, `Category Level3`) %>% 
+                bind_rows(
+                  tibble(`Category Level1` = c("UNCATEGORISED EXPENSE", "UNCATEGORISED INCOME"),
+                         `Category Level2` = c("UNCATEGORISED EXPENSE", "UNCATEGORISED INCOME"), 
+                         `Category Level3` = c("EXPENSE", "INCOME"))) %>% 
+                distinct(`Category Level1`, .keep_all = TRUE)
+              , by = "Category Level1") %>% 
+    filter(Date >= miniumum_forecast_value())
+)
+
+
+
+
+```
+
+
+
+Rest of the page {data-width=600}
+---
+
+### Chart A
+
+
+```{r}
+
+
+
+forecasted_expenses_plot_data <- reactive(
+  
+  forecast_table_for_saving() %>%
+    
+    filter(Date <= forecast_date_display_limit()) %>% 
+    
+    {if (input$Level3_options_2 == "(All)") {.} else
+    {filter(., `Category Level3` == input$Level3_options_2)} } %>%
+    
+    {if (length(input$Level2_options_2) == 0 | length(input$Level2_options_2) == length(Level2_options_2())) {.} else
+    {filter(., `Category Level2` %in% input$Level2_options_2)} } %>%
+    
+    {if (length(input$Level1_options_2) == 0 | length(input$Level1_options_2) == length(Level1_options_2())) {.} else
+    {filter(., `Category Level1` %in% input$Level1_options_2)} } %>%
+    
+    group_by(Date, !! as.symbol(input$display_level_id)) %>%
+    summarise(total_expenses = sum(Amount, na.rm = T)) %>%
+    
+    {if (input$display_level_id != "Category Level3") {.} else {
+      bind_rows(., group_by(., Date) %>%
+                  summarise(total_expenses = sum(total_expenses)
+                  ) %>%
+                  mutate(!! as.symbol(input$display_level_id) := "NET POSITION")
+      ) }} %>%  
+    
+    mutate(total_expenses = if_else(!! as.symbol(input$display_level_id) == "NET POSITION", 
+                                    total_expenses,
+                                    abs(total_expenses))) %>% 
+    group_by(!! as.symbol(input$display_level_id)) %>% 
+    mutate(cumulative_expenses = if_else(!! as.symbol(input$display_level_id) == "NET POSITION", 
+                                         cumsum(total_expenses) + input$savings_id, 
+                                         cumsum(total_expenses))) %>% 
+    ungroup())
+
+
+
+
+
+forecasted_expenses_plot <- reactive(
+  forecasted_expenses_plot_data() %>% 
+    
+    ggplot() +
+    aes(Date, cumulative_expenses, col = !! as.symbol(input$display_level_id), key = Date, 
+        label = paste0(!! as.symbol(input$display_level_id), "\n", scales::dollar(cumulative_expenses, accuracy = 1))) +
+    geom_line(data = . %>% filter(!! as.symbol(input$display_level_id) != "NET POSITION"), stat = "identity") +
+    
+    {if (nrow(filter(forecasted_expenses_plot_data(), !! as.symbol(input$display_level_id) == "NET POSITION")) == 0) {NULL} else
+    {geom_line(data = . %>% filter(!! as.symbol(input$display_level_id) == "NET POSITION"), stat = "identity", linetype = "dashed")}} +
+    
+    {if (length(forecast_date_selection()) != 0) 
+    {geom_vline(xintercept = as.numeric(as.Date(forecast_date_selection()[[1]])), linetype = "dashed")} else {NULL}} +
+    
+    # add labels for these points
+    {if (length(forecast_date_selection()) != 0) 
+    {geom_text(data = forecasted_expenses_plot_data() %>% 
+                 filter(Date == forecast_date_selection()[[1]]), nudge_x = 0.1
+    )} else {NULL}} +
+    
+    
+    
+    labs(x = NULL, y = NULL)
+)
+
+
+
+renderPlotly(
+  {if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+    
+    forecasted_expenses_plot() %>%
+      ggplotly(source = "forecast_transactions_plot") %>%
+      config(displayModeBar = F) %>%
+      layout(xaxis=list(fixedrange=TRUE)) %>%
+      layout(yaxis=list(fixedrange=TRUE))
+  }})
+
+
+forecast_date_selection <- reactive(event_data("plotly_click", source = "forecast_transactions_plot")["key"])
+
+```
+
+
+
+Row {data-width=400}
+------
+
+### Chart B
+
+```{r}
+
+
+# renderDataTable(
+#   
+#   {if (nrow(new_and_already_done_row_items()) == 0) {NULL} else {
+#     
+#     datatable(forecasted_expenses_plot_data()
+#               # some kind of grouping and summarising to go here
+#               , rownames = F
+#               , extensions="Buttons"
+#               , options = 
+#                 list(
+#                   dom = 'Bfrtip',
+#                   buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+#                   pageLength = 20, scrollY = "300px")) %>% 
+#       formatDate("Date", "toDateString") %>% 
+#       formatCurrency("cumulative_expenses",  digits = 0) 
+# }})
+
+
+
+
+
+```
+
+
+
+### Chart C
+
+```{r}
+
+
+
+```
+
+
+
+
+
+
+
+
+Instructions
+===================================== 
+
+
+SideBar {.sidebar}
+---
